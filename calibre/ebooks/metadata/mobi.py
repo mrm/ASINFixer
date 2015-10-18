@@ -13,13 +13,16 @@ import os
 from struct import pack, unpack
 from cStringIO import StringIO
 
-from calibre.ebooks import normalize
-from calibre.ebooks.mobi import MobiError, MAX_THUMB_DIMEN
-# from calibre.ebooks.mobi.utils import rescale_image
-# from calibre.ebooks.mobi.langcodes import iana2mobi
-# from calibre.utils.date import now as nowf
-# from calibre.utils.imghdr import what
-# from calibre.utils.localization import canonicalize_lang, lang_as_iso639_1
+class MobiError(Exception):
+    pass
+
+MAX_THUMB_DIMEN = (180, 240)
+
+def normalize(x):
+    if isinstance(x, unicode):
+        import unicodedata
+        x = unicodedata.normalize('NFC', x)
+    return x
 
 def is_image(ss):
     if ss is None:
@@ -322,204 +325,9 @@ class MetadataUpdater(object):
         return StreamSlicer(self.stream, start, stop)
 
     def update(self, mi):
-        mi.title = normalize(mi.title)
-        def update_exth_record(rec):
-            recs.append(rec)
-            if rec[0] in self.original_exth_records:
-                self.original_exth_records.pop(rec[0])
-
-        if self.type != "BOOKMOBI":
-                raise MobiError("Setting metadata only supported for MOBI files of type 'BOOK'.\n"
-                                "\tThis is a %r file of type %r" % (self.type[0:4], self.type[4:8]))
-
-        recs = []
-        added_501 = False
-        try:
-            from calibre.ebooks.conversion.config import load_defaults
-            prefs = load_defaults('mobi_output')
-            pas = prefs.get('prefer_author_sort', False)
-            kindle_pdoc = prefs.get('personal_doc', None)
-            share_not_sync = prefs.get('share_not_sync', False)
-        except:
-            pas = False
-            kindle_pdoc = None
-            share_not_sync = False
-        if mi.author_sort and pas:
-            # We want an EXTH field per author...
-            authors = mi.author_sort.split(' & ')
-            for author in authors:
-                update_exth_record((100, normalize(author).encode(self.codec, 'replace')))
-        elif mi.authors:
-            authors = mi.authors
-            for author in authors:
-                update_exth_record((100, normalize(author).encode(self.codec, 'replace')))
-        if mi.publisher:
-            update_exth_record((101, normalize(mi.publisher).encode(self.codec, 'replace')))
-        if mi.comments:
-            # Strip user annotations
-            a_offset = mi.comments.find('<div class="user_annotations">')
-            ad_offset = mi.comments.find('<hr class="annotations_divider" />')
-            if a_offset >= 0:
-                mi.comments = mi.comments[:a_offset]
-            if ad_offset >= 0:
-                mi.comments = mi.comments[:ad_offset]
-            update_exth_record((103, normalize(mi.comments).encode(self.codec, 'replace')))
-        if mi.isbn:
-            update_exth_record((104, mi.isbn.encode(self.codec, 'replace')))
-        if mi.tags:
-            # FIXME: Keep a single subject per EXTH field?
-            subjects = '; '.join(mi.tags)
-            update_exth_record((105, normalize(subjects).encode(self.codec, 'replace')))
-
-            if kindle_pdoc and kindle_pdoc in mi.tags:
-                added_501 = True
-                update_exth_record((501, b'PDOC'))
-
-        if mi.pubdate:
-            update_exth_record((106, str(mi.pubdate).encode(self.codec, 'replace')))
-        elif mi.timestamp:
-            update_exth_record((106, str(mi.timestamp).encode(self.codec, 'replace')))
-        elif self.timestamp:
-            update_exth_record((106, self.timestamp))
-        # else:
-        #     update_exth_record((106, nowf().isoformat().encode(self.codec, 'replace')))
-        if self.cover_record is not None:
-            update_exth_record((201, pack('>I', self.cover_rindex)))
-            update_exth_record((203, pack('>I', 0)))
-        if self.thumbnail_record is not None:
-            update_exth_record((202, pack('>I', self.thumbnail_rindex)))
-        # Add a 113 record if not present to allow Amazon syncing
-        if (113 not in self.original_exth_records and
-                self.original_exth_records.get(501, None) == 'EBOK' and
-                not added_501 and not share_not_sync):
-            from uuid import uuid4
-            update_exth_record((113, str(uuid4())))
-        # Add a 112 record with actual UUID
-        if getattr(mi, 'uuid', None):
-            update_exth_record((112,
-                    (u"calibre:%s" % mi.uuid).encode(self.codec, 'replace')))
-        if 503 in self.original_exth_records:
-            update_exth_record((503, mi.title.encode(self.codec, 'replace')))
-
-        # Update book producer
-        if getattr(mi, 'book_producer', False):
-            update_exth_record((108, mi.book_producer.encode(self.codec, 'replace')))
-
-        # Set langcode in EXTH header
-        # if not mi.is_null('language'):
-        #     lang = canonicalize_lang(mi.language)
-        #     lang = lang_as_iso639_1(lang) or lang
-        #     if lang:
-        #         update_exth_record((524, lang.encode(self.codec, 'replace')))
-
-        # Include remaining original EXTH fields
-        for id in sorted(self.original_exth_records):
-            recs.append((id, self.original_exth_records[id]))
-        recs = sorted(recs, key=lambda x:(x[0],x[0]))
-
-        exth = StringIO()
-        for code, data in recs:
-            exth.write(pack('>II', code, len(data) + 8))
-            exth.write(data)
-        exth = exth.getvalue()
-        trail = len(exth) % 4
-        pad = '\0' * (4 - trail)  # Always pad w/ at least 1 byte
-        exth = ['EXTH', pack('>II', len(exth) + 12, len(recs)), exth, pad]
-        exth = ''.join(exth)
-
-        if getattr(self, 'exth', None) is None:
-            raise MobiError('No existing EXTH record. Cannot update metadata.')
-
-        # if not mi.is_null('language'):
-        #     self.record0[92:96] = iana2mobi(mi.language)
-        self.create_exth(exth=exth, new_title=mi.title)
-
-        # Fetch updated timestamp, cover_record, thumbnail_record
-        self.fetchEXTHFields()
-
-        if mi.cover_data[1] or mi.cover:
-            try:
-                data =  mi.cover_data[1] if mi.cover_data[1] else open(mi.cover, 'rb').read()
-            except:
-                pass
-            else:
-                if is_image(self.cover_record):
-                    size = len(self.cover_record)
-                    # cover = rescale_image(data, size)
-                    cover = b'0'
-                    if len(cover) <= size:
-                        cover += b'\0' * (size - len(cover))
-                        self.cover_record[:] = cover
-                if is_image(self.thumbnail_record):
-                    size = len(self.thumbnail_record)
-                    # thumbnail = rescale_image(data, size, dimen=MAX_THUMB_DIMEN)
-                    thumbnail = b''
-                    if len(thumbnail) <= size:
-                        thumbnail += b'\0' * (size - len(thumbnail))
-                        self.thumbnail_record[:] = thumbnail
-                return
+        return
 
 def set_metadata(stream, mi):
     mu = MetadataUpdater(stream)
     mu.update(mi)
     return
-
-def get_metadata(stream):
-    from calibre.ebooks.metadata import MetaInformation
-    from calibre.ptempfile import TemporaryDirectory
-    from calibre.ebooks.mobi.reader.headers import MetadataHeader
-    from calibre.ebooks.mobi.reader.mobi6 import MobiReader
-    from calibre.utils.magick.draw import save_cover_data_to
-    from calibre import CurrentDir
-
-    stream.seek(0)
-    try:
-        raw = stream.read(3)
-    except:
-        raw = ''
-    stream.seek(0)
-    if raw == b'TPZ':
-        from calibre.ebooks.metadata.topaz import get_metadata
-        return get_metadata(stream)
-    from calibre.utils.logging import Log
-    log = Log()
-    try:
-        mi = MetaInformation(os.path.basename(stream.name), [_('Unknown')])
-    except:
-        mi = MetaInformation(_('Unknown'), [_('Unknown')])
-    mh = MetadataHeader(stream, log)
-    if mh.title and mh.title != _('Unknown'):
-        mi.title = mh.title
-
-    if mh.exth is not None:
-        if mh.exth.mi is not None:
-            mi = mh.exth.mi
-    else:
-        size = 1024**3
-        if hasattr(stream, 'seek') and hasattr(stream, 'tell'):
-            pos = stream.tell()
-            stream.seek(0, 2)
-            size = stream.tell()
-            stream.seek(pos)
-        if size < 4*1024*1024:
-            with TemporaryDirectory('_mobi_meta_reader') as tdir:
-                with CurrentDir(tdir):
-                    mr = MobiReader(stream, log)
-                    parse_cache = {}
-                    mr.extract_content(tdir, parse_cache)
-                    if mr.embedded_mi is not None:
-                        mi = mr.embedded_mi
-    if hasattr(mh.exth, 'cover_offset'):
-        cover_index = mh.first_image_index + mh.exth.cover_offset
-        data  = mh.section_data(int(cover_index))
-    else:
-        try:
-            data  = mh.section_data(mh.first_image_index)
-        except:
-            data = ''
-    # if data and what(None, data) in {'jpg', 'jpeg', 'gif', 'png', 'bmp', 'webp'}:
-    #     try:
-    #         mi.cover_data = ('jpg', save_cover_data_to(data, 'cover.jpg', return_data=True))
-    #     except Exception:
-    #         log.exception('Failed to read MOBI cover')
-    return mi
