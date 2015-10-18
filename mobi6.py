@@ -9,7 +9,7 @@ __docformat__ = 'restructuredtext en'
 import struct
 from cStringIO import StringIO
 
-from calibre.ebooks.metadata.mobi import MetadataUpdater, MobiError
+from mobi import MetadataUpdater, MobiError
 
 class TopazError(ValueError):
     pass
