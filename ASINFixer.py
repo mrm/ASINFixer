@@ -23,7 +23,7 @@ def main(argv):
         usage()
         sys.exit(2)
 
-    apply_fix(argv[0], argv[1])
+    fix_mobi_asin(argv[0], argv[1])
 
 def usage():
     print 'ASINFixer.py source_path ASIN'
