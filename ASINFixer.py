@@ -1,9 +1,8 @@
+import sys
 from mobi6 import MinimalMobiUpdater
 
-def fix_mobi_asin(book_src):
-
-    def apply_fix(file_src):
-            asin = 'B00PCJWIC2'
+def fix_mobi_asin(book_src, asin):
+    def apply_fix(file_src, asin):
 
             # with lopen(file_src, 'wb') as f:
             #     db.copy_format_to(book_id, fmt, f, index_is_id=True)
@@ -13,11 +12,21 @@ def fix_mobi_asin(book_src):
                 mu.update(asin, b'EBOK')
                 stream.seek(0)
 
-    print 'Fixing'
-    apply_fix('/Users/matthijs/ASINFixer/test.azw3')
+    print 'Fixing %s with ASIN: %s' % (book_src, asin)
+    apply_fix(book_src, asin)
     print 'Done.'
 
     return True
 
+def main(argv):
+    if len(argv) != 2:
+        usage()
+        sys.exit(2)
+
+    apply_fix(argv[0], argv[1])
+
+def usage():
+    print 'ASINFixer.py source_path ASIN'
+
 if __name__ == "__main__":
-    fix_mobi_asin('test')
+    main(sys.argv[1:])
